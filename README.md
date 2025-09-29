@@ -19,14 +19,18 @@ tables back into XLSX workbooks automatically.
 ## Requirements
 
 - Python 3.10+
-- The packages listed in [`requirements.txt`](requirements.txt)
+- The Python packages listed in [`.env`](.env)
 
 Install the dependencies with:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate  # On Windows use: .venv\Scripts\activate
-pip install -r requirements.txt
+set -a
+source .env
+set +a
+pip install --upgrade pip
+pip install $PYTHON_DEPENDENCIES
 ```
 
 ## Running the app

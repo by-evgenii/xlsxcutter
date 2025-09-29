@@ -22,8 +22,11 @@ jobs:
 
       - name: Install dependencies
         run: |
+          set -a
+          source .env
+          set +a
           python -m pip install --upgrade pip
-          pip install -r requirements.txt pyinstaller
+          pip install $PYTHON_DEPENDENCIES pyinstaller
         shell: bash
 
       - name: Build executable with PyInstaller

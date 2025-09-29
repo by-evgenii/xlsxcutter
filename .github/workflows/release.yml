@@ -1,0 +1,53 @@
+name: Build release binaries
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: Build for ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          set -a
+          source .env
+          set +a
+          python -m pip install --upgrade pip
+          pip install $PYTHON_DEPENDENCIES pyinstaller
+        shell: bash
+
+      - name: Build executable with PyInstaller
+        run: |
+          pyinstaller xlsxcutter.py --name xlsxcutter --onefile --windowed
+        shell: bash
+
+      - name: Prepare artifact
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            mv dist/xlsxcutter.exe dist/xlsxcutter-${{ matrix.os }}.exe
+            echo "asset_path=dist/xlsxcutter-${{ matrix.os }}.exe" >> $GITHUB_ENV
+          else
+            mv dist/xlsxcutter dist/xlsxcutter-${{ matrix.os }}
+            echo "asset_path=dist/xlsxcutter-${{ matrix.os }}" >> $GITHUB_ENV
+          fi
+        shell: bash
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v1
+        with:
+          files: ${{ env.asset_path }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

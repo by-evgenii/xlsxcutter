@@ -9,6 +9,7 @@ and Linux.
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 from typing import Iterable
@@ -20,6 +21,8 @@ from tkinter import filedialog, messagebox, ttk
 # Excel specific limits
 MAX_EXCEL_ROWS = 1_048_576
 DEFAULT_ROWS_PER_FILE = 50_000
+
+CELL_REF_RE = re.compile(r"^([A-Za-z]+)([0-9]+)$")
 
 
 def resource_path(relative: str) -> Path:
@@ -53,6 +56,73 @@ def sanitise_sheet_name(name: str) -> str:
     return candidate or "sheet"
 
 
+def cell_to_indices(cell_ref: str) -> tuple[int, int]:
+    """Convert an Excel style cell reference (e.g. ``B5``) to zero based indices."""
+
+    match = CELL_REF_RE.match(cell_ref.strip())
+    if not match:
+        raise ValueError("Cell references must be like A1 or BC12.")
+
+    col_part, row_part = match.groups()
+    row_idx = int(row_part) - 1
+    if row_idx < 0:
+        raise ValueError("Row number must be greater than zero.")
+
+    col_idx = 0
+    for char in col_part.upper():
+        if not char.isalpha():
+            raise ValueError("Column part must contain only letters.")
+        col_idx = col_idx * 26 + (ord(char) - ord("A") + 1)
+    col_idx -= 1
+    if col_idx < 0:
+        raise ValueError("Column must be greater than zero.")
+
+    return row_idx, col_idx
+
+
+def prepare_table_slice(
+    df: pd.DataFrame, start_cell: str, end_cell: str | None
+) -> pd.DataFrame:
+    """Return a DataFrame sliced to the provided cell range.
+
+    The top-left cell defines the header row of the resulting table.  When an
+    end cell is provided, it is treated as inclusive.
+    """
+
+    start_row, start_col = cell_to_indices(start_cell)
+    if end_cell:
+        end_row, end_col = cell_to_indices(end_cell)
+        if end_row < start_row or end_col < start_col:
+            raise ValueError("End cell must be below and to the right of the start cell.")
+    else:
+        end_row = df.shape[0] - 1
+        end_col = df.shape[1] - 1
+
+    if start_row >= df.shape[0] or start_col >= df.shape[1]:
+        raise ValueError("Start cell lies outside the populated area of the sheet.")
+
+    end_row = min(end_row, df.shape[0] - 1)
+    end_col = min(end_col, df.shape[1] - 1)
+
+    subset = df.iloc[start_row : end_row + 1, start_col : end_col + 1].copy()
+    subset.reset_index(drop=True, inplace=True)
+    if subset.empty or len(subset.index) <= 1:
+        return pd.DataFrame()
+
+    header_row = subset.iloc[0].fillna("")
+    data = subset.iloc[1:].copy()
+
+    columns = []
+    for idx, value in enumerate(header_row):
+        text = str(value).strip()
+        columns.append(text or f"Column {idx + 1}")
+
+    data.columns = columns
+    data.reset_index(drop=True, inplace=True)
+    data = data.loc[:, ~data.columns.duplicated()]
+    return data
+
+
 class ExcelCutterApp:
     """Tkinter application for slicing and converting Excel files."""
 
@@ -84,6 +154,8 @@ class ExcelCutterApp:
         self.output_dir_var = tk.StringVar()
         self.sheet_var = tk.StringVar()
         self.rows_var = tk.StringVar(value=str(DEFAULT_ROWS_PER_FILE))
+        self.start_cell_var = tk.StringVar(value="A1")
+        self.end_cell_var = tk.StringVar(value="")
         self.format_vars = {
             "xlsx": tk.BooleanVar(value=True),
             "csv": tk.BooleanVar(value=False),
@@ -147,23 +219,33 @@ class ExcelCutterApp:
         )
         rows_spin.grid(row=3, column=1, sticky="w", pady=(8, 0))
 
-        ttk.Label(parent, text="Output folder:").grid(row=4, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(parent, text="Table range:").grid(row=4, column=0, sticky="w", pady=(8, 0))
+        range_frame = ttk.Frame(parent)
+        range_frame.grid(row=4, column=1, columnspan=2, sticky="w", pady=(8, 0))
+        ttk.Label(range_frame, text="Start:").grid(row=0, column=0, sticky="w")
+        start_entry = ttk.Entry(range_frame, textvariable=self.start_cell_var, width=8)
+        start_entry.grid(row=0, column=1, sticky="w", padx=(4, 8))
+        ttk.Label(range_frame, text="End (optional):").grid(row=0, column=2, sticky="w")
+        end_entry = ttk.Entry(range_frame, textvariable=self.end_cell_var, width=8)
+        end_entry.grid(row=0, column=3, sticky="w", padx=(4, 0))
+
+        ttk.Label(parent, text="Output folder:").grid(row=5, column=0, sticky="w", pady=(8, 0))
         output_entry = ttk.Entry(parent, textvariable=self.output_dir_var)
-        output_entry.grid(row=4, column=1, sticky="ew", padx=(0, 8), pady=(8, 0))
+        output_entry.grid(row=5, column=1, sticky="ew", padx=(0, 8), pady=(8, 0))
         ttk.Button(parent, text="Browse", command=self.select_output_folder).grid(
-            row=4, column=2, sticky="ew", pady=(8, 0)
+            row=5, column=2, sticky="ew", pady=(8, 0)
         )
 
-        ttk.Label(parent, text="Export formats:").grid(row=5, column=0, sticky="nw", pady=(16, 0))
+        ttk.Label(parent, text="Export formats:").grid(row=6, column=0, sticky="nw", pady=(16, 0))
         format_frame = ttk.Frame(parent)
-        format_frame.grid(row=5, column=1, columnspan=2, sticky="w", pady=(16, 0))
+        format_frame.grid(row=6, column=1, columnspan=2, sticky="w", pady=(16, 0))
         for idx, (fmt, var) in enumerate(self.format_vars.items()):
             ttk.Checkbutton(format_frame, text=fmt.upper(), variable=var).grid(
                 row=0, column=idx, padx=(0, 12)
             )
 
         ttk.Button(parent, text="Split", command=self.split_excel).grid(
-            row=6, column=1, sticky="e", pady=(24, 0)
+            row=7, column=1, sticky="e", pady=(24, 0)
         )
 
     def _build_assemble_tab(self, parent: ttk.Frame) -> None:
@@ -273,14 +355,30 @@ class ExcelCutterApp:
             )
             return
 
+        start_cell = self.start_cell_var.get().strip()
+        end_cell = self.end_cell_var.get().strip()
+
+        if not start_cell:
+            messagebox.showerror("Missing start", "Please provide the top-left cell for the table.")
+            return
+
         try:
-            df = pd.read_excel(file_path, sheet_name=sheet_name, header=0)
+            raw_df = pd.read_excel(file_path, sheet_name=sheet_name, header=None)
         except Exception as exc:
             messagebox.showerror("Read error", f"Unable to read sheet: {exc}")
             return
 
+        try:
+            df = prepare_table_slice(raw_df, start_cell=start_cell, end_cell=end_cell or None)
+        except ValueError as exc:
+            messagebox.showerror("Invalid range", str(exc))
+            return
+
         if df.empty:
-            messagebox.showinfo("Empty sheet", "The selected sheet has no data to split.")
+            messagebox.showinfo(
+                "Empty table",
+                "The selected range does not contain data rows to split.",
+            )
             return
 
         safe_sheet = sanitise_sheet_name(sheet_name)
